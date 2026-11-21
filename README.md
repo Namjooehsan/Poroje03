@@ -23,22 +23,27 @@ python app.py
 - `APP_SECRET`: کلید تصادفی طولانی برای API ورودی
 - `TELEGRAM_ADMIN_IDS`: شناسه عددی ادمین‌های مجاز تلگرام، جداشده با کاما
 - `TELEGRAM_WEBHOOK_SECRET`: secret token وب‌هوک تلگرام
-- `METRICOOL_API_TOKEN`: REST API Access Token متریکول
-- `METRICOOL_USER_ID`: شناسه حساب Metricool
-- `METRICOOL_BLOG_ID`: شناسه برند Metricool
-- `METRICOOL_TIMEZONE`: منطقه زمانی برند؛ پیش‌فرض Asia/Tehran
-- `GLOBAL_PROVIDERS`: مقصدهای جهانی متصل و مجاز در Metricool
+- `BUFFER_API_KEY`: کلید شخصی Buffer؛ فقط در متغیرهای محرمانه میزبان
+- `BUFFER_ORGANIZATION_ID`: اختیاری؛ در صورت خالی بودن، اولین سازمان حساب انتخاب می‌شود
+- `POST_TIMEZONE`: منطقه زمانی زمان‌بندی؛ پیش‌فرض Asia/Tehran
+- `GLOBAL_PROVIDERS`: نام شبکه‌های متصل در Buffer مانند facebook,instagram,linkedin,threads,twitter,bluesky,tiktok,youtube,pinterest,mastodon
 - `IRAN_PROVIDERS`: فقط آداپتورهای ایرانی که واقعاً پیاده‌سازی و تست شده‌اند
 - `AUTO_PUBLISH`: مقدار پیش‌فرض false؛ در این حالت پست‌ها Draft می‌شوند
 
-## دریافت کلید Metricool
-در نسخه فعلی Metricool، API فقط در پلن‌های Advanced و Custom موجود است. مسیر:
-Account Settings → API → REST API Access Token
+## دریافت کلید رایگان Buffer API
 
-هر درخواست API به سه مقدار نیاز دارد: توکن در هدر `X-Mc-Auth` و `userId` و `blogId` در query string. توکن را در GitHub یا فایل‌های مخزن قرار ندهید؛ فقط در متغیرهای محرمانه میزبان تنظیم کنید.
+Buffer در پلن Free هم API دارد. مسیر:
+Buffer → Settings → API → Create API Key
 
-راهنمای رسمی:
-https://help.metricool.com/basic-guide-for-api-integration-r97af
+محدودیت پلن رایگان: ۱ کلید API، حداکثر ۳ کانال و ۱۰۰۰ درخواست برای هر کانال در ماه (حداکثر ۳۰۰۰ درخواست). صف انتشار رایگان نیز محدود به ۱۰ پست زمان‌بندی‌شده برای هر کانال است.
+
+مستندات رسمی:
+- https://developers.buffer.com/guides/getting-started.html
+- https://developers.buffer.com/guides/authentication.html
+- https://developers.buffer.com/examples/create-scheduled-post.html
+- https://developers.buffer.com/guides/hosting-media.html
+
+پس از دریافت کلید، آن را فقط در Railway Variables با نام `BUFFER_API_KEY` قرار دهید؛ آن را در چت، README یا فایل‌های GitHub قرار ندهید. برای پیدا کردن کانال‌ها و سازمان، موتور از API حساب Buffer استفاده می‌کند. برای تست اولیه `AUTO_PUBLISH=false` بماند تا پست‌ها به صورت Draft ساخته شوند.
 
 ## API ورودی پست
 `POST /api/posts`
@@ -76,7 +81,9 @@ https://help.metricool.com/basic-guide-for-api-integration-r97af
 - بازنویسی چندزبانه مبتنی بر هوش مصنوعی هنوز متصل نشده؛ نسخه فعلی سه تغییر متنی ساده می‌سازد.
 - انتشار YouTube به فایل ویدئو و متادیتای لازم نیاز دارد و در این نسخه غیرفعال است.
 - پیش از فعال‌کردن `AUTO_PUBLISH=true` باید یک پست آزمایشی Draft بررسی شود.
-- سرویس هنوز به Railway مستقر نشده است؛ ایجاد پروژه جدید با محدودیت منابع پلن رایگان Railway متوقف شد. سرویس‌های موجود کاربر دست‌نخورده باقی مانده‌اند.
+- موتور به Buffer منتقل شده، اما هنوز در Railway مستقر نشده است؛ ایجاد پروژه جدید با محدودیت منابع پلن رایگان Railway متوقف شد. برای جلوگیری از اختلال، سرویس‌های فعال پروژه‌های دیگر دست‌نخورده باقی مانده‌اند.
+- Buffer فقط کانال‌هایی را می‌تواند هدف بگیرد که در حساب Buffer خودت متصل کرده‌ای؛ پلن رایگان حداکثر ۳ کانال دارد.
+- ارسال خودکار رسانه نیازمند URL عمومی HTTPS و ماندگار است. تلگرام هنوز فایل‌های عکس/ویدئو را به‌صورت خودکار به URL عمومی تبدیل نمی‌کند.
 
 ## وضعیت امنیتی
 هیچ توکن یا کلید واقعی نباید در مخزن، پیام عمومی یا کد سمت کاربر قرار بگیرد. `APP_SECRET` و `TELEGRAM_WEBHOOK_SECRET` باید مقادیر تصادفی قوی و مستقل باشند.
