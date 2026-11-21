@@ -137,6 +137,10 @@ def buffer_schedule(text, media, provider, publish_at):
         fields.extend(["mode: addToQueue", "saveToDraft: true"])
     if assets:
         fields.append("assets: [" + ", ".join(assets) + "]")
+    if service == "facebook":
+        fields.append("metadata: { facebook: { type: post } }")
+    elif service == "instagram":
+        fields.append("metadata: { instagram: { type: post } }")
     mutation = """
     mutation CreatePost {
       createPost(input: {
