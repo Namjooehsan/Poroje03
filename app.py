@@ -23,7 +23,7 @@ BLOG_ID = os.getenv("METRICOOL_BLOG_ID", "")
 TZ_NAME = os.getenv("METRICOOL_TIMEZONE", "Asia/Tehran")
 GLOBAL_PROVIDERS = [x.strip().lower() for x in os.getenv("GLOBAL_PROVIDERS", "facebook,instagram").split(",") if x.strip()]
 IRAN_PROVIDERS = [x.strip().lower() for x in os.getenv("IRAN_PROVIDERS", "").split(",") if x.strip()]
-AUTO_PUBLISH = os.getenv("AUTO_PUBLISH", "false").lower() == "true"
+AUTO_PUBLISH = os.getenv("AUTO_PUBLISH", "true").lower() == "true"
 DB_PATH = os.getenv("DATABASE_PATH", "posts.db")
 METRICOOL_URL = "https://app.metricool.com/api/v2/scheduler/posts"
 
@@ -198,6 +198,35 @@ def create_post():
     except Exception:
         log.exception("Post intake failed")
         return jsonify({"error": "internal_error"}), 500
+
+
+
+TELEGRAM_ADMIN_IDS = {x.strip() for x in os.getenv("TELEGRAM_ADMIN_IDS", "").split(",") if x.strip()}
+TELEGRAM_WEBHOOK_SECRET = os.getenv("TELEGRAM_WEBHOOK_SECRET", "")
+
+@app.post("/telegram/webhook")
+def telegram_webhook():
+    supplied = request.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
+    if not TELEGRAM_WEBHOOK_SECRET or supplied != TELEGRAM_WEBHOOK_SECRET:
+        return jsonify({"error": "unauthorized"}), 401
+    update = request.get_json(silent=True) or {}
+    message = update.get("message") or {}
+    sender = str((message.get("from") or {}).get("id", ""))
+    if not sender or sender not in TELEGRAM_ADMIN_IDS:
+        return jsonify({"ok": True, "ignored": True}), 200
+    text = str(message.get("text") or message.get("caption") or "").strip()
+    if not text or text.startswith("/"):
+        return jsonify({"ok": True, "ignored": True}), 200
+    scope = "iran_only" if "فقط ایران" in text else "global"
+    try:
+        post_id, created = save_post(text, scope, [])
+        if not created:
+            return jsonify({"ok": True, "status": "duplicate_ignored"}), 200
+        schedule = schedule_campaign(post_id)
+        return jsonify({"ok": True, "post_id": post_id, "scope": scope, "schedule": schedule}), 202
+    except Exception:
+        log.exception("Telegram post intake failed")
+        return jsonify({"ok": False, "error": "processing_failed"}), 500
 
 
 init_db()
