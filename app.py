@@ -3,7 +3,7 @@ import json
 import sqlite3
 import hashlib
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 import requests
@@ -17,16 +17,16 @@ app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 25 * 1024 * 1024
 
 APP_SECRET = os.getenv("APP_SECRET", "")
-API_TOKEN = os.getenv("METRICOOL_API_TOKEN", "")
-USER_ID = os.getenv("METRICOOL_USER_ID", "")
-BLOG_ID = os.getenv("METRICOOL_BLOG_ID", "")
-TZ_NAME = os.getenv("METRICOOL_TIMEZONE", "Asia/Tehran")
+BUFFER_API_KEY = os.getenv("BUFFER_API_KEY", "")
+BUFFER_ORGANIZATION_ID = os.getenv("BUFFER_ORGANIZATION_ID", "")
+TZ_NAME = os.getenv("POST_TIMEZONE", "Asia/Tehran")
 GLOBAL_PROVIDERS = [x.strip().lower() for x in os.getenv("GLOBAL_PROVIDERS", "facebook,instagram").split(",") if x.strip()]
 IRAN_PROVIDERS = [x.strip().lower() for x in os.getenv("IRAN_PROVIDERS", "").split(",") if x.strip()]
 # Safe default: create drafts until the owner explicitly enables automatic publishing.
 AUTO_PUBLISH = os.getenv("AUTO_PUBLISH", "false").lower() == "true"
 DB_PATH = os.getenv("DATABASE_PATH", "posts.db")
-METRICOOL_URL = "https://app.metricool.com/api/v2/scheduler/posts"
+BUFFER_API_URL = "https://api.buffer.com"
+BUFFER_CHANNEL_CACHE = {}
 RETRYABLE_STATUSES = ("queued", "blocked", "failed")
 
 
@@ -70,36 +70,91 @@ def make_variants(text):
     ]
 
 
-def metricool_schedule(text, media, provider, publish_at):
-    if not all([API_TOKEN, USER_ID, BLOG_ID]):
-        raise RuntimeError("Metricool API credentials are not configured")
-    payload = {
-        "publicationDate": {
-            "dateTime": publish_at.strftime("%Y-%m-%dT%H:%M:%S"),
-            "timezone": TZ_NAME
-        },
-        "text": text,
-        "providers": [{"network": provider}],
-        "autoPublish": AUTO_PUBLISH,
-        "draft": not AUTO_PUBLISH
-    }
-    if media:
-        # Metricool accepts public, non-expiring HTTPS media URLs with
-        # saveExternalMediaFiles enabled.
-        payload["media"] = media
-        payload["saveExternalMediaFiles"] = True
-
-    headers = {"X-Mc-Auth": API_TOKEN, "Content-Type": "application/json"}
+def buffer_graphql(query):
+    if not BUFFER_API_KEY:
+        raise RuntimeError("Buffer API key is not configured")
     response = requests.post(
-        METRICOOL_URL,
-        params={"blogId": BLOG_ID, "userId": USER_ID},
-        headers=headers, json=payload, timeout=30
+        BUFFER_API_URL,
+        headers={"Authorization": f"Bearer {BUFFER_API_KEY}", "Content-Type": "application/json"},
+        json={"query": query}, timeout=30
     )
     response.raise_for_status()
-    try:
-        return response.json()
-    except ValueError:
-        return {"http_status": response.status_code, "response_text": response.text[:1000]}
+    payload = response.json()
+    if payload.get("errors"):
+        raise RuntimeError(json.dumps(payload["errors"], ensure_ascii=False))
+    return payload.get("data", {})
+
+
+def buffer_channels():
+    global BUFFER_ORGANIZATION_ID
+    if not BUFFER_API_KEY:
+        raise RuntimeError("Buffer API key is not configured")
+    if BUFFER_CHANNEL_CACHE:
+        return BUFFER_CHANNEL_CACHE
+    if not BUFFER_ORGANIZATION_ID:
+        data = buffer_graphql("query { account { organizations { id name } } }")
+        organizations = (data.get("account") or {}).get("organizations") or []
+        if not organizations:
+            raise RuntimeError("No Buffer organization is available")
+        BUFFER_ORGANIZATION_ID = organizations[0]["id"]
+    query = """
+    query GetChannels {
+      channels(input: { organizationId: "%s" }) {
+        id
+        name
+        displayName
+        service
+      }
+    }
+    """ % BUFFER_ORGANIZATION_ID
+    data = buffer_graphql(query)
+    for channel in (data.get("channels") or []):
+        BUFFER_CHANNEL_CACHE[str(channel.get("service", "")).lower()] = channel
+    return BUFFER_CHANNEL_CACHE
+
+
+def buffer_schedule(text, media, provider, publish_at):
+    channels = buffer_channels()
+    aliases = {"x": "twitter", "twitter": "twitter", "googlebusiness": "googlebusiness"}
+    service = aliases.get(provider, provider)
+    channel = channels.get(service)
+    if not channel:
+        raise RuntimeError(f"No connected Buffer channel for provider: {provider}")
+    assets = []
+    for url in media:
+        lower = url.lower().split("?", 1)[0]
+        kind = "video" if lower.endswith((".mp4", ".mov", ".m4v", ".webm")) else "image"
+        assets.append("{ " + kind + ": { url: " + json.dumps(url) + " } }")
+    fields = [
+        "text: " + json.dumps(text, ensure_ascii=False),
+        "channelId: " + json.dumps(channel["id"]),
+        "schedulingType: automatic"
+    ]
+    if AUTO_PUBLISH:
+        due_at = publish_at.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+        fields.extend(["mode: customScheduled", "dueAt: " + json.dumps(due_at)])
+    else:
+        fields.extend(["mode: addToQueue", "saveToDraft: true"])
+    if assets:
+        fields.append("assets: [" + ", ".join(assets) + "]")
+    mutation = """
+    mutation CreatePost {
+      createPost(input: {
+        %s
+      }) {
+        ... on PostActionSuccess { post { id text status dueAt } }
+        ... on MutationError { message }
+      }
+    }
+    """ % "\n        ".join(fields)
+    data = buffer_graphql(mutation)
+    result = data.get("createPost") or {}
+    if result.get("message") and not result.get("post"):
+        raise RuntimeError(result["message"])
+    post = result.get("post")
+    if not post:
+        raise RuntimeError("Buffer returned no post result")
+    return {"provider": "buffer", "post": post, "channel": channel.get("displayName") or channel.get("name")}
 
 
 def save_post(text, scope, media):
@@ -165,7 +220,7 @@ def schedule_campaign(post_id):
                 outcomes.append({"wave": wave + 1, "provider": provider, "status": "skipped", "reason": "YouTube video metadata and upload workflow are not configured"})
                 continue
             try:
-                result = metricool_schedule(variant, media, provider, publish_at)
+                result = buffer_schedule(variant, media, provider, publish_at)
                 status = "scheduled" if AUTO_PUBLISH else "draft"
                 with db() as conn:
                     conn.execute(
@@ -207,9 +262,10 @@ def health():
     return jsonify({
         "ok": True,
         "service": "global-post-engine",
+        "publishing_provider": "buffer",
         "auto_publish": AUTO_PUBLISH,
         "publishing_mode": "automatic" if AUTO_PUBLISH else "draft_review",
-        "metricool_credentials_configured": all([API_TOKEN, USER_ID, BLOG_ID]),
+        "buffer_credentials_configured": bool(BUFFER_API_KEY),
         "global_providers": GLOBAL_PROVIDERS,
         "iran_providers_configured": bool(IRAN_PROVIDERS)
     })
