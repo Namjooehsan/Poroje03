@@ -271,6 +271,29 @@ def health():
     })
 
 
+@app.get("/api/buffer/channels")
+def list_buffer_channels():
+    if not APP_SECRET or request.headers.get("X-App-Secret", "") != APP_SECRET:
+        return jsonify({"error": "unauthorized"}), 401
+    try:
+        channels = list(buffer_channels().values())
+        return jsonify({
+            "organization_id": BUFFER_ORGANIZATION_ID,
+            "channels": [
+                {
+                    "id": item.get("id"),
+                    "name": item.get("name"),
+                    "display_name": item.get("displayName"),
+                    "service": item.get("service")
+                }
+                for item in channels
+            ]
+        }), 200
+    except Exception:
+        log.exception("Buffer channel discovery failed")
+        return jsonify({"error": "buffer_connection_failed"}), 502
+
+
 @app.post("/api/posts")
 def create_post():
     if not APP_SECRET or request.headers.get("X-App-Secret", "") != APP_SECRET:
